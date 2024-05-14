@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -13,11 +15,19 @@ import (
 	"time"
 
 	"github.com/gocolly/colly"
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-	"github.com/robfig/cron/v3"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
+	"golang.org/x/crypto/bcrypt"
 )
 
+var errUsuarioNaoEncontrado error = errors.New("usuario nao encontrado")
+var errSessaoNaoEncontrada error = errors.New("sessao nao encontrada")
+type resposta struct {
+	Success 	bool `json:"success"`
+	Data 			any  `json:"data"`
+}
 type Log struct {
 	Status   int  `json:"status"`
 	Msg			string `json:"msg"`
@@ -25,13 +35,31 @@ type Log struct {
 }
 
 type Manga struct {
-	id    int  
-	name 	string;
-	chapterNumber  int;
-	url    string;
-	image  string;
+	Id    int  `json:"id"`
+	Name 	string `json:"name"`
+	ChapterNumber  int `json:"chapterNumber"`
+	Url    string `json:"url"`
+	Image  string `json:"image"`
 }
 
+type User struct {
+	Id    			int  `json:"id"`
+	Username 		string `json:"username"`
+	Password  	string `json:"password"`
+	Created_at  time.Time `json:"created_at"`
+	Updated_at  time.Time `json:"updated_at"`
+}
+type Session struct {
+	Id 					string
+	User_id			int 
+	Created_at  int64
+	Expires_at  int64
+	IsActive    int
+}
+
+func (s Session) isExpired() bool {
+	return s.Expires_at < time.Now().Unix()
+}
 type Image struct {
 	Url string  `json:"url"`
 }
@@ -111,14 +139,72 @@ func main() {
 	database = &Database{
 		con: db,
 	}
-	cron := cron.New()
+	// cron := cron.New()
 	
-	id, err := cron.AddFunc(CRON_JOB, start)
-	fmt.Println(err)
-	cron.Entry(id).Job.Run()
-	cron.Start()
+	// id, err := cron.AddFunc(CRON_JOB, start)
+	// fmt.Println(err)
+	// cron.Entry(id).Job.Run()
+	// cron.Start()
 
-	http.ListenAndServe(":8080", nil)
+	handler := func (w http.ResponseWriter, r *http.Request) {
+		tmpl := template.Must(template.ParseFiles("views/index.html"))
+		m, err := queryMangas(database.con)
+		if err != nil {
+			fmt.Println("QUERY MANGAS - handler", err)
+			return
+		}
+		mangas := map[string][]Manga{
+			"Mangas" : m,
+		}
+
+		fmt.Println("maa", mangas)
+		tmpl.Execute(w, mangas)
+	}
+
+	handler2 := func (w http.ResponseWriter, r *http.Request)  {	
+		log.Println("HTMX REQUEST RECEIVED")
+		log.Println(r.Header.Get("HX-Request"))
+		name := r.PostFormValue("manga-name")
+		chapter := r.PostFormValue("manga-chapter")
+		url := r.PostFormValue("manga-url")
+		image := r.PostFormValue("manga-image")
+	
+		// htmlStr := fmt.Sprintf("<li class='list-group-item'> %s - %s</li>", name, chapter)
+		// tmpl, _ := template.New("t").Parse(htmlStr)
+		// tmpl.Execute(w, nil)
+		chN, _ := strconv.Atoi(chapter)
+		m := Manga{
+				Name: name,
+				ChapterNumber: chN,
+				Url: url,
+				Image: image,
+		}
+		// _, err := insertManga(database.con, m)
+
+		// if err != nil {
+		// 	fmt.Println("INSERT MANGA - handler2",err)
+		// 	return
+		// }
+		tmpl := template.Must(template.ParseFiles("views/index.html"))
+		tmpl.ExecuteTemplate(w, "manga-list-element", m)
+	}
+
+	fs := http.FileServer(http.Dir("views"))
+	http.Handle("/css/", fs) // acessando a pasta css diretamente
+	http.HandleFunc("/", handler)
+	http.HandleFunc("/manga", handler2)
+	router := mux.NewRouter()
+	
+	router.HandleFunc("/api/user", createUser).Methods("POST")
+	router.HandleFunc("/api/login", login).Methods("POST")
+	
+	privateRouter := router.PathPrefix("/").Subrouter()
+	privateRouter.Use(AuthMiddleware)
+
+	privateRouter.HandleFunc("/api/mangas", listMangas).Methods("GET")
+
+	log.Println("Servidor rodando na porta 8080")
+	log.Fatal(http.ListenAndServe(":8080", router))
 }
 
 func start() {
@@ -127,7 +213,7 @@ func start() {
 }
 
 func simple(db *sql.DB) {
-	mangas, err := queryMangas(db)
+	mangas, err := queryMangas(database.con)
 
 	if err != nil {
 		erro := fmt.Sprintf("Erro funcao SIMPLE: %s", err.Error())
@@ -158,14 +244,14 @@ func simple(db *sql.DB) {
 				writeToFile("logs.log", logError(erro))
 			}
 
-			if (maior(mangas[index].chapterNumber, n)) {
-				mangas[index].chapterNumber = n
+			if (maior(mangas[index].ChapterNumber, n)) {
+				mangas[index].ChapterNumber = n
 				mangasToSend = append(mangasToSend,mangas[index])
-				updateManga(db, mangas[index].id, n)
+				updateManga(db, mangas[index].Id, n)
 			}
 		})
 		
-		c.Visit(ma.url)
+		c.Visit(ma.Url)
 	}
 }
 
@@ -180,10 +266,10 @@ func dispatchWebhook() {
 	var embedAr = []DiscordBody{}
 
 	for _, ch := range mangasToSend {
-		jsonBody.Description = fmt.Sprintf("capitulo %d", ch.chapterNumber)
-		jsonBody.Image.Url = ch.image
-		jsonBody.Title = ch.name
-		jsonBody.Url = ch.url
+		jsonBody.Description = fmt.Sprintf("capitulo %d", ch.ChapterNumber)
+		jsonBody.Image.Url = ch.Image
+		jsonBody.Title = ch.Name
+		jsonBody.Url = ch.Url
 		jsonBody.Type = "rich"
 
 		embedAr = append(embedAr, jsonBody)
@@ -236,6 +322,244 @@ func dispatchWebhook() {
 	defer res.Body.Close()
 }
 
+func listMangas(w http.ResponseWriter, r *http.Request) {
+	mangas, err := queryMangas(database.con)
+
+	if err != nil {
+		erro := fmt.Sprintf("erro ao listar manga: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return
+	}
+
+  toJSON(w, http.StatusOK, mangas)
+}
+
+func createUser(w http.ResponseWriter, r *http.Request) {
+	var user User 
+	json.NewDecoder(r.Body).Decode(&user)
+	w.Header().Set("Content-type", "application/json")
+
+	p, err := HashPassword(user.Password)
+	
+	if err != nil {
+		erro := fmt.Sprintf("erro ao criptografar senha: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return
+	}
+
+	user.Password = p
+
+	_, err = insertUser(database.con, user)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		res := resposta {
+			Success: false,
+			Data: "Erro	ao criar usuario",
+		}
+		jsonValue, _ := json.Marshal(res)
+		w.Write(jsonValue)
+		return
+	}
+
+	d := struct {
+		Username 					string 	`json:"username"`
+	} {
+		Username: user.Username,
+	}
+
+	res := resposta {
+		Success: true,
+		Data: d,
+	}
+
+	jsonValue, _ := json.Marshal(res)
+	w.WriteHeader(http.StatusCreated)
+	w.Write(jsonValue)
+}
+
+func login(w http.ResponseWriter, r *http.Request) {
+	var user User 
+	json.NewDecoder(r.Body).Decode(&user)
+
+	userDb, err := findUserByUsername(database.con, user.Username)
+
+	if err == errUsuarioNaoEncontrado {
+		erro := fmt.Sprintf("%s", err)
+		writeToFile("logs.log", logError(erro))
+		toJSON(w, http.StatusUnprocessableEntity, "Usuario nao encontrado")
+		return
+	}
+
+	isValidPassword := CheckPasswordHash(user.Password, userDb.Password)
+	
+	if !isValidPassword {
+		writeToFile("logs.log", logError("Senha invalida"))
+		toJSON(w, http.StatusUnprocessableEntity, "Usuario nao encontrado")
+		return
+	}
+
+	sessionToken := uuid.NewString()
+	currentTime := time.Now()
+	expiresAt := currentTime.Add(8 * time.Hour).Unix()
+	
+	insertSession(database.con, Session{
+		Id: sessionToken,
+		User_id: userDb.Id,
+		Created_at: currentTime.Unix(),
+		Expires_at: expiresAt,
+	})
+
+	d := struct {
+		Username 					string 	`json:"username"`
+	} {
+		Username: user.Username,
+	}
+
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	
+	http.SetCookie(w, &http.Cookie{
+		Name: "session",
+		Value: sessionToken,
+		Path: "/",
+		Expires: time.Unix(expiresAt, 0).UTC(),
+	})
+	toJSON(w, http.StatusOK, d)
+}
+
+func toJSON(w http.ResponseWriter, statusCode int, msg any) {
+	w.Header().Set("Content-type", "application/json")
+	var res resposta
+	if statusCode == 200 || statusCode == 201 {
+		res = resposta {
+			Success: true,
+			Data: msg,
+		}
+	} else {
+		res = resposta {
+			Success: false,
+			Data: msg,
+		}
+	}
+	
+	w.WriteHeader(statusCode)
+	jsonValue, _ := json.Marshal(res)
+	w.Write(jsonValue)
+}
+
+func AuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func (w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie("session")
+		if err != nil {
+			if err == http.ErrNoCookie {
+				log.Println("nao cookie", err)
+				toJSON(w, http.StatusUnauthorized, "Nao autorizado")
+				return 
+			}
+			log.Println("outro erro de cookie", err)
+			toJSON(w, http.StatusBadRequest, "Nao autorizado")
+			return
+		}
+
+		sessionToken := c.Value
+
+		log.Println(sessionToken)
+		session, err := findSessionById(database.con, sessionToken, 1)
+
+		if err == errSessaoNaoEncontrada {
+			erro := fmt.Sprintf("%s", err)
+			writeToFile("logs.log", logError(erro))
+			toJSON(w, http.StatusUnprocessableEntity, "Sessao nao encontrada")
+			return
+		}
+		
+		if session.isExpired() {
+			log.Println("expirado")
+			deleteSession(database.con, sessionToken)
+			toJSON(w, http.StatusUnauthorized, "Nao autorizado")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+	return string(bytes), err
+}
+
+func CheckPasswordHash(password, passwordHashed string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(passwordHashed), []byte(password))
+	return err == nil
+}
+func insertSession(db *sql.DB, session Session) (int64, error) {
+	slqStatementUpdt := `INSERT INTO sessions 
+	(id, user_id, created_at, expires_at, isActive) VALUES (?, ?, ?, ?, ?)`
+
+	result, err := db.Exec(slqStatementUpdt, 
+		session.Id,
+		session.User_id,
+		session.Created_at,
+		session.Expires_at,
+		1,
+	)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao rodar INSERT SESSION: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err !=  nil {
+		erro := fmt.Sprintf("Erro ao retornar linhas afetadas INSERT SESSION: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+	
+	ok := fmt.Sprintf("Inserindo session: %v", session)
+	log.Printf(ok)
+	writeToFile("logs.log", logOk(ok))
+	return rowsAffected, nil
+}
+
+func deleteSession(db *sql.DB, id string) (int64, error) {
+	slqStatementUpdt := `UPDATE sessions SET isActive = 0 WHERE id = ?`
+
+	result, err := db.Exec(slqStatementUpdt, 
+		id,
+	)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao rodar DELETE SESSION: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err !=  nil {
+		erro := fmt.Sprintf("Erro ao retornar linhas afetadas DELETE SESSION: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+	
+	ok := fmt.Sprintf("deletando session: %v", id)
+	log.Printf(ok)
+	writeToFile("logs.log", logOk(ok))
+	return rowsAffected, nil
+}
 
 func queryMangas (db *sql.DB) ([]Manga, error) {
 	rows, err := db.Query("SELECT * FROM mangas")
@@ -252,7 +576,7 @@ func queryMangas (db *sql.DB) ([]Manga, error) {
   for rows.Next() {
     var manga Manga
 
-    if err := rows.Scan(&manga.id, &manga.name, &manga.chapterNumber, &manga.url, &manga.image); err != nil {
+    if err := rows.Scan(&manga.Id, &manga.Name, &manga.ChapterNumber, &manga.Url, &manga.Image); err != nil {
 			erro := fmt.Sprintf("Erro ao escanear linha QUERY MANGAS: %s", err.Error())
 			log.Panic(erro)
 			writeToFile("logs.log", logError(erro))
@@ -270,6 +594,39 @@ func queryMangas (db *sql.DB) ([]Manga, error) {
   }
 
 	return mangas, nil
+}
+
+func insertManga(db *sql.DB, manga Manga) (int64, error) {
+	slqStatementUpdt := `INSERT INTO mangas 
+	(name, chapterNumber, url, image) VALUES (?, ?, ?, ?)`
+
+	result, err := db.Exec(slqStatementUpdt, 
+		manga.Name, 
+		manga.ChapterNumber,
+		manga.Url,
+		manga.Image,
+	)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao rodar INSERT MANGA: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err !=  nil {
+		erro := fmt.Sprintf("Erro ao retornar linhas afetadas INSERT MANGA: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+	
+	ok := fmt.Sprintf("Inserindo manga: %v", manga)
+	log.Printf(ok)
+	writeToFile("logs.log", logOk(ok))
+	return rowsAffected, nil
 }
 
 func updateManga(db *sql.DB, id int, chapterNumber int) (int64, error) {
@@ -299,6 +656,88 @@ func updateManga(db *sql.DB, id int, chapterNumber int) (int64, error) {
 
 	return rowsAffected, nil
 }
+
+func insertUser(db *sql.DB, user User) (int64, error) {
+	slqStatementUpdt := `INSERT INTO users 
+	(username, password) VALUES (?, ?)`
+
+	result, err := db.Exec(slqStatementUpdt, 
+		user.Username, 
+		user.Password,
+	)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao rodar INSERT USER: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err !=  nil {
+		erro := fmt.Sprintf("Erro ao retornar linhas afetadas INSERT USER: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+	
+	ok := fmt.Sprintf("Inserindo user: %v", user)
+	log.Printf(ok)
+	writeToFile("logs.log", logOk(ok))
+	return rowsAffected, nil
+}
+
+func findUserByUsername (db *sql.DB, username string) (User, error) {
+	sqlStatement := "SELECT id, username, password FROM users WHERE username = ?"
+	var user User
+	row := db.QueryRow(sqlStatement, username)
+	
+	err := row.Scan(&user.Id, &user.Username, &user.Password)
+
+	switch err {
+	case sql.ErrNoRows: 
+	return User{}, errUsuarioNaoEncontrado
+	case nil:
+		return user, nil
+	default:
+		erro := fmt.Sprintf("Erro ao encontrar usuario por nome: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		panic(err)
+	}
+}
+
+func findSessionById (db *sql.DB, id string, isActive int) (Session, error) {
+	var sqlStatement string
+	if isActive == 1 {
+		sqlStatement = "SELECT id, user_id, created_at, expires_at FROM sessions WHERE id = ? AND isActive = 1"
+	} else if isActive == 0 {
+		sqlStatement = "SELECT id, user_id, created_at, expires_at FROM sessions WHERE id = ? AND isActive = 0"
+	} else {
+		sqlStatement = "SELECT id, user_id, created_at, expires_at FROM sessions WHERE id = ?"
+	}
+	log.Println(sqlStatement)
+	var session Session
+	row := db.QueryRow(sqlStatement, id)
+	
+	err := row.Scan(&session.Id, &session.User_id, &session.Created_at, &session.Expires_at)
+
+	switch err {
+	case sql.ErrNoRows: 
+	log.Println("no rows")
+	return Session{}, errSessaoNaoEncontrada
+	case nil:
+		return session, nil
+	default:
+		erro := fmt.Sprintf("Erro ao encontrar sessao por id: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		panic(err)
+	}
+}
+
+
 
 func writeToFile (pathWithFileName string, text string) error {
 	file, err := os.OpenFile(pathWithFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -336,6 +775,7 @@ func logOk(msg string) string {
 func logError(msg string) string {
 	log := Log {
 		Status: 500,
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 		Msg: msg,
 	}
 

@@ -2,3 +2,5 @@
 logs.log
 script.txt
 db-script.sql
+.env.example
+tmp
