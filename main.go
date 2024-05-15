@@ -84,6 +84,7 @@ var database *Database
 var URL_DISCORD string
 var TOKEN string
 var CRON_JOB string
+var ORIGIN_URL string
 
 func maior(n1 int, n2 int) bool {
 	if (n1 >= n2) {
@@ -109,6 +110,10 @@ func main() {
 	DATABASE_URL := os.Getenv("DATABASE_URL_TURSO")
 	DATABASE_AUTH := os.Getenv("AUTH_TOKEN_TURSO")
 	CRON_JOB := os.Getenv("CRON_JOB")
+	ORIGIN_URL := os.Getenv("ORIGIN_URL")
+
+	log.Println("ORIGIN_URL", ORIGIN_URL)
+	writeToFile("logs.log", logOk(fmt.Sprintf("ORIGIN_URL: %s", ORIGIN_URL)))
 
 	log.Println("CRON_JOB", CRON_JOB)
 	writeToFile("logs.log", logOk(fmt.Sprintf("CRON_JOB: %s", CRON_JOB)))
@@ -194,14 +199,16 @@ func main() {
 	http.HandleFunc("/", handler)
 	http.HandleFunc("/manga", handler2)
 	router := mux.NewRouter()
+
+	router.Use(enableCORS)
 	
-	router.HandleFunc("/api/user", createUser).Methods("POST")
-	router.HandleFunc("/api/login", login).Methods("POST")
+	router.HandleFunc("/api/user", createUser).Methods(http.MethodPost, http.MethodOptions)
+	router.HandleFunc("/api/login", login).Methods(http.MethodPost, http.MethodOptions)
 	
 	privateRouter := router.PathPrefix("/").Subrouter()
 	privateRouter.Use(AuthMiddleware)
-
-	privateRouter.HandleFunc("/api/mangas", listMangas).Methods("GET")
+	
+	privateRouter.HandleFunc("/api/mangas", listMangas).Methods(http.MethodGet, http.MethodOptions)
 
 	log.Println("Servidor rodando na porta 8080")
 	log.Fatal(http.ListenAndServe(":8080", router))
@@ -489,6 +496,21 @@ func AuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", ORIGIN_URL)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(204)
+			return
+	}
+
+		next.ServeHTTP(w, r)
+	})	
+}
 func HashPassword(password string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 10)
 	return string(bytes), err
