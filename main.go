@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	"github.com/robfig/cron/v3"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -85,6 +86,7 @@ var URL_DISCORD string
 var TOKEN string
 var CRON_JOB string
 var ORIGIN_URL string
+var ENVIRONMENT string
 
 func maior(n1 int, n2 int) bool {
 	if (n1 >= n2) {
@@ -111,6 +113,11 @@ func main() {
 	DATABASE_AUTH := os.Getenv("AUTH_TOKEN_TURSO")
 	CRON_JOB := os.Getenv("CRON_JOB")
 	ORIGIN_URL := os.Getenv("ORIGIN_URL")
+	ENVIRONMENT := os.Getenv("ENVIRONMENT")
+
+
+	log.Println("ENVIRONMENT", ENVIRONMENT)
+	writeToFile("logs.log", logOk(fmt.Sprintf("ENVIRONMENT: %s", ENVIRONMENT)))
 
 	log.Println("ORIGIN_URL", ORIGIN_URL)
 	writeToFile("logs.log", logOk(fmt.Sprintf("ORIGIN_URL: %s", ORIGIN_URL)))
@@ -144,12 +151,22 @@ func main() {
 	database = &Database{
 		con: db,
 	}
-	// cron := cron.New()
+	cron := cron.New()
 	
-	// id, err := cron.AddFunc(CRON_JOB, start)
-	// fmt.Println(err)
-	// cron.Entry(id).Job.Run()
-	// cron.Start()
+	id, err := cron.AddFunc(CRON_JOB, start)
+	fmt.Println(err)
+	cron.Entry(id).Job.Run()
+	cron.Start()
+	
+	router := mux.NewRouter()
+
+	api := router.PathPrefix("/api/").Subrouter()
+	api.Use(enableCORS)
+	api.HandleFunc("/user", createUser).Methods(http.MethodPost, http.MethodOptions)
+	api.HandleFunc("/login", login).Methods(http.MethodPost, http.MethodOptions)
+	privateRouter := api.PathPrefix("/").Subrouter()
+	privateRouter.Use(AuthMiddleware)
+	privateRouter.HandleFunc("/mangas", listMangas).Methods(http.MethodGet, http.MethodOptions)
 
 	handler := func (w http.ResponseWriter, r *http.Request) {
 		tmpl := template.Must(template.ParseFiles("views/index.html"))
@@ -184,31 +201,29 @@ func main() {
 				Url: url,
 				Image: image,
 		}
-		// _, err := insertManga(database.con, m)
+		_, err := insertManga(database.con, m)
 
-		// if err != nil {
-		// 	fmt.Println("INSERT MANGA - handler2",err)
-		// 	return
-		// }
+		if err != nil {
+			fmt.Println("INSERT MANGA - handler2",err)
+			return
+		}
 		tmpl := template.Must(template.ParseFiles("views/index.html"))
 		tmpl.ExecuteTemplate(w, "manga-list-element", m)
 	}
 
-	fs := http.FileServer(http.Dir("views"))
-	http.Handle("/css/", fs) // acessando a pasta css diretamente
-	http.HandleFunc("/", handler)
-	http.HandleFunc("/manga", handler2)
-	router := mux.NewRouter()
+	//fs := http.FileServer(http.Dir("views"))
+	//http.Handle("/css/", fs) // acessando a pasta css diretamente
+	router.HandleFunc("/", handler)
+	var add_manga string
 
-	router.Use(enableCORS)
-	
-	router.HandleFunc("/api/user", createUser).Methods(http.MethodPost, http.MethodOptions)
-	router.HandleFunc("/api/login", login).Methods(http.MethodPost, http.MethodOptions)
-	
-	privateRouter := router.PathPrefix("/").Subrouter()
-	privateRouter.Use(AuthMiddleware)
-	
-	privateRouter.HandleFunc("/api/mangas", listMangas).Methods(http.MethodGet, http.MethodOptions)
+	if ENVIRONMENT == "development" {
+		// mangazy é a rota no nginx
+		add_manga = "/mangazy/add-manga"
+	} else {
+		add_manga = "/add-manga"
+	}
+
+	router.HandleFunc(add_manga,handler2)
 
 	log.Println("Servidor rodando na porta 8080")
 	log.Fatal(http.ListenAndServe(":8080", router))

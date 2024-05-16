@@ -12,6 +12,7 @@ FROM alpine:latest
 
 WORKDIR /app 
 COPY --from=BUILD /app/web-scrapping /app
+COPY --from=BUILD /app/views /app/views
 
 EXPOSE 8080
 
