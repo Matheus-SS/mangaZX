@@ -217,8 +217,8 @@ func main() {
 	var add_manga string
 
 	if ENVIRONMENT == "development" {
-		// mangazy é a rota no nginx
-		add_manga = "/mangazy/add-manga"
+		// mangazx é a rota no nginx
+		add_manga = "/mangazx/add-manga"
 	} else {
 		add_manga = "/add-manga"
 	}
