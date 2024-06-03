@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gocolly/colly"
+	"github.com/golang-jwt/jwt"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -25,6 +26,8 @@ import (
 
 var errUsuarioNaoEncontrado error = errors.New("usuario nao encontrado")
 var errSessaoNaoEncontrada error = errors.New("sessao nao encontrada")
+var errTokenInvalido error = errors.New("token invalido")
+var errTokenExpirado error = errors.New("token expirado")
 type resposta struct {
 	Success 	bool `json:"success"`
 	Data 			any  `json:"data"`
@@ -60,6 +63,11 @@ type Session struct {
 
 func (s Session) isExpired() bool {
 	return s.Expires_at < time.Now().Unix()
+}
+
+type UserClaims struct {
+	Session_id			string `json:"session_id"`
+	jwt.StandardClaims
 }
 type Image struct {
 	Url string  `json:"url"`
@@ -411,7 +419,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 	if err == errUsuarioNaoEncontrado {
 		erro := fmt.Sprintf("%s", err)
 		writeToFile("logs.log", logError(erro))
-		toJSON(w, http.StatusUnprocessableEntity, "Usuario nao encontrado")
+		toJSON(w, http.StatusUnprocessableEntity, "usuario ou senha invalidos")
 		return
 	}
 
@@ -419,7 +427,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 	
 	if !isValidPassword {
 		writeToFile("logs.log", logError("Senha invalida"))
-		toJSON(w, http.StatusUnprocessableEntity, "Usuario nao encontrado")
+		toJSON(w, http.StatusUnprocessableEntity, "usuario ou senha invalidos")
 		return
 	}
 
@@ -434,10 +442,23 @@ func login(w http.ResponseWriter, r *http.Request) {
 		Expires_at: expiresAt,
 	})
 
+	userClaims := UserClaims{
+		Session_id: sessionToken,
+		StandardClaims: jwt.StandardClaims{
+			IssuedAt: currentTime.Unix(),
+			ExpiresAt: expiresAt,
+		},
+	}
+	accessToken, err := NewAccessToken(userClaims)
+
+	if err != nil {
+		fmt.Println("Erro ao gerar novo token de login", err)
+	}
+
 	d := struct {
-		Username 					string 	`json:"username"`
+		Access_token 					string 	`json:"access_token"`
 	} {
-		Username: user.Username,
+		Access_token: accessToken,
 	}
 
 	if err != nil {
@@ -445,12 +466,6 @@ func login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	http.SetCookie(w, &http.Cookie{
-		Name: "session",
-		Value: sessionToken,
-		Path: "/",
-		Expires: time.Unix(expiresAt, 0).UTC(),
-	})
 	toJSON(w, http.StatusOK, d)
 }
 
@@ -476,34 +491,42 @@ func toJSON(w http.ResponseWriter, statusCode int, msg any) {
 
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func (w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie("session")
-		if err != nil {
-			if err == http.ErrNoCookie {
-				log.Println("nao cookie", err)
-				toJSON(w, http.StatusUnauthorized, "Nao autorizado")
-				return 
-			}
-			log.Println("outro erro de cookie", err)
-			toJSON(w, http.StatusBadRequest, "Nao autorizado")
+		authorization := r.Header.Get("Authorization")
+		if authorization == "" {
+			log.Println("nao token")
+			toJSON(w, http.StatusUnauthorized, "token invalido")
+			return 
+		}
+
+		token := strings.Split(authorization, " ")[1]
+
+		tokenSession, errToken := ParseAccessToken(token)
+
+		if errors.Is(errToken, errTokenInvalido) {
+			fmt.Println("AUTENTICAÇÃO MIDDLEWARE TOKEN INVALIDO", errToken.Error())
+			toJSON(w, http.StatusUnauthorized, errTokenInvalido.Error())
 			return
 		}
 
-		sessionToken := c.Value
+		if errors.Is(errToken, errTokenExpirado) {
+			fmt.Println("AUTENTICAÇÃO MIDDLEWARE TOKEN EXPIRADO", errToken.Error())
+			toJSON(w, http.StatusUnauthorized, errTokenExpirado.Error())
+			return
+		}
 
-		log.Println(sessionToken)
-		session, err := findSessionById(database.con, sessionToken, 1)
+		session, err := findSessionById(database.con, tokenSession.Session_id, 1)
 
 		if err == errSessaoNaoEncontrada {
 			erro := fmt.Sprintf("%s", err)
 			writeToFile("logs.log", logError(erro))
-			toJSON(w, http.StatusUnprocessableEntity, "Sessao nao encontrada")
+			toJSON(w, http.StatusUnauthorized, "sessao nao encontrada")
 			return
 		}
 		
 		if session.isExpired() {
 			log.Println("expirado")
-			deleteSession(database.con, sessionToken)
-			toJSON(w, http.StatusUnauthorized, "Nao autorizado")
+			deleteSession(database.con, tokenSession.Session_id)
+			toJSON(w, http.StatusUnauthorized, "nao autorizado")
 			return
 		}
 
@@ -513,7 +536,13 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", ORIGIN_URL)
+		//log.Println("CORS", ORIGIN_URL)
+		if (ENVIRONMENT == "production") {
+			w.Header().Set("Access-Control-Allow-Origin", ORIGIN_URL)
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "http://localhost:8081")
+		}
+
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT")
@@ -825,3 +854,31 @@ func logError(msg string) string {
 	txt := string(j) 
 	return txt
 }
+
+func NewAccessToken(claims UserClaims) (string, error) {
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return accessToken.SignedString([]byte("SECRET_TOKEN"))
+}
+
+func ParseAccessToken(accessToken string) (*UserClaims, error) {
+	parsedAccessToken, _ := jwt.ParseWithClaims(
+		accessToken,
+		&UserClaims{},
+		func(t *jwt.Token) (interface{}, error) {
+			return []byte("SECRET_TOKEN"), nil
+		},
+	)
+
+	claims, ok := parsedAccessToken.Claims.(*UserClaims)
+
+	if !ok {
+		return nil, errTokenInvalido
+	}
+
+	if claims.ExpiresAt < time.Now().Unix() {
+		return nil, errTokenExpirado
+	}
+
+	return claims, nil
+}
+
