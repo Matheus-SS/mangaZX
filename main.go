@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	expo "github.com/oliveroneill/exponent-server-sdk-golang/sdk"
 	"github.com/robfig/cron/v3"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	"golang.org/x/crypto/bcrypt"
@@ -44,6 +46,7 @@ type Manga struct {
 	ChapterNumber  int `json:"chapterNumber"`
 	Url    string `json:"url"`
 	Image  string `json:"image"`
+	LastChapterLink  string `json:"lastChapterLink"`
 }
 
 type User struct {
@@ -53,12 +56,29 @@ type User struct {
 	Created_at  time.Time `json:"created_at"`
 	Updated_at  time.Time `json:"updated_at"`
 }
+
+type FavoriteManga struct {
+	Id    			int  `json:"id"`
+	UserId 		  int `json:"userId"`
+	MangaId  	  int `json:"mangaId"`
+	Created_at  time.Time `json:"created_at"`
+}
+
+type Login struct {
+	Id    			int  `json:"id"`
+	Username 		string `json:"username"`
+	Password  	string `json:"password"`
+	Created_at  time.Time `json:"created_at"`
+	Updated_at  time.Time `json:"updated_at"`
+	TokenNotification string `json:"tokenNotification"`
+}
 type Session struct {
 	Id 					string
 	User_id			int 
 	Created_at  int64
 	Expires_at  int64
 	IsActive    int
+	TokenNotification string
 }
 
 func (s Session) isExpired() bool {
@@ -95,7 +115,7 @@ var TOKEN string
 var CRON_JOB string
 var ORIGIN_URL string
 var ENVIRONMENT string
-
+const CTX_KEY = "USERID"
 func maior(n1 int, n2 int) bool {
 	if (n1 >= n2) {
 		return false
@@ -175,6 +195,9 @@ func main() {
 	privateRouter := api.PathPrefix("/").Subrouter()
 	privateRouter.Use(AuthMiddleware)
 	privateRouter.HandleFunc("/mangas", listMangas).Methods(http.MethodGet, http.MethodOptions)
+	privateRouter.HandleFunc("/mangas/me/favorite", createFavoriteManga).Methods(http.MethodPost, http.MethodOptions)
+	privateRouter.HandleFunc("/send-notification", sendNotification).Methods(http.MethodPost, http.MethodOptions)
+
 
 	handler := func (w http.ResponseWriter, r *http.Request) {
 		tmpl := template.Must(template.ParseFiles("views/index.html"))
@@ -239,7 +262,7 @@ func main() {
 
 func start() {
 	simple(database.con)
-	dispatchWebhook()
+	//dispatchWebhook()
 }
 
 func simple(db *sql.DB) {
@@ -262,8 +285,12 @@ func simple(db *sql.DB) {
 		})
 
 		c.OnHTML(".lastend", func(e *colly.HTMLElement) {
+
+			
 			// PEGAR O ULTIMO CAPITULO DO MANGA
 			lastChapter := e.ChildText("div.inepcx span.epcurlast")
+
+			lastChapterLink := e.ChildAttr(".inepcx:nth-of-type(2) a", "href")
 
 			lastChapterNumber := strings.Split(lastChapter, " ")[1]
 			n, err := strconv.Atoi(lastChapterNumber)
@@ -277,7 +304,7 @@ func simple(db *sql.DB) {
 			if (maior(mangas[index].ChapterNumber, n)) {
 				mangas[index].ChapterNumber = n
 				mangasToSend = append(mangasToSend,mangas[index])
-				updateManga(db, mangas[index].Id, n)
+				updateManga(db, mangas[index].Id, n, lastChapterLink)
 			}
 		})
 		
@@ -352,6 +379,44 @@ func dispatchWebhook() {
 	defer res.Body.Close()
 }
 
+func sendNotificationToDevices() {
+
+}
+
+func sendNotification(w http.ResponseWriter, r *http.Request) {
+	// To check the token is valid
+	pushToken, err := expo.NewExponentPushToken("")
+	if err != nil {
+			panic(err)
+	}
+
+	// Create a new Expo SDK client
+	client := expo.NewPushClient(nil)
+
+	// Publish message
+	response, err := client.Publish(
+			&expo.PushMessage{
+					To: []expo.ExponentPushToken{pushToken},
+					Body: "This is a test notification",
+					Data: map[string]string{"withSome": "data"},
+					Sound: "default",
+					Title: "Notification Title",
+					Priority: expo.DefaultPriority,
+			},
+	)
+	
+	// Check errors
+	if err != nil {
+			panic(err)
+	}
+	
+	// Validate responses
+	if response.ValidateResponse() != nil {
+			fmt.Println(response.PushMessage.To, "failed")
+	}
+	toJSON(w, 200, "ok")
+}
+
 func listMangas(w http.ResponseWriter, r *http.Request) {
 	mangas, err := queryMangas(database.con)
 
@@ -365,6 +430,38 @@ func listMangas(w http.ResponseWriter, r *http.Request) {
   toJSON(w, http.StatusOK, mangas)
 }
 
+func createFavoriteManga(w http.ResponseWriter, r *http.Request) {
+	var fav FavoriteManga 
+	json.NewDecoder(r.Body).Decode(&fav)
+
+	ctx := r.Context()
+
+	userId := getUserId(ctx)
+	
+	userIdInt, err := strconv.Atoi(userId)
+
+	if err != nil {
+		fmt.Println("erro de conversao", err)
+	}
+	 _, errr := insertFavoriteManga(database.con, FavoriteManga{
+		UserId: userIdInt,
+		MangaId: fav.MangaId,
+	})
+
+	if errr != nil {
+		writeToFile("logs.log", logError(err.Error()))
+		toJSON(w, http.StatusInternalServerError, "erro ao inserir manga favorito")
+		return
+	}
+
+	d := struct {
+		Message 					string 	`json:"message"`
+	} {
+		Message: "ok",
+	}
+
+	toJSON(w, http.StatusOK, d)
+}
 func createUser(w http.ResponseWriter, r *http.Request) {
 	var user User 
 	json.NewDecoder(r.Body).Decode(&user)
@@ -411,7 +508,7 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func login(w http.ResponseWriter, r *http.Request) {
-	var user User 
+	var user Login 
 	json.NewDecoder(r.Body).Decode(&user)
 
 	userDb, err := findUserByUsername(database.con, user.Username)
@@ -433,13 +530,14 @@ func login(w http.ResponseWriter, r *http.Request) {
 
 	sessionToken := uuid.NewString()
 	currentTime := time.Now()
-	expiresAt := currentTime.Add(8 * time.Hour).Unix()
+	expiresAt := currentTime.Add(744 * time.Hour).Unix()
 	
 	insertSession(database.con, Session{
 		Id: sessionToken,
 		User_id: userDb.Id,
 		Created_at: currentTime.Unix(),
 		Expires_at: expiresAt,
+		TokenNotification: user.TokenNotification,
 	})
 
 	userClaims := UserClaims{
@@ -529,11 +627,25 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			toJSON(w, http.StatusUnauthorized, "nao autorizado")
 			return
 		}
+		
+		ctx := r.Context()
+	
+		ctx = context.WithValue(ctx, CTX_KEY,strconv.Itoa(session.User_id))
 
+		r = r.WithContext(ctx)
 		next.ServeHTTP(w, r)
 	})
 }
 
+func getUserId(ctx context.Context) string {
+	userId := ctx.Value(CTX_KEY)
+
+	reqID, ok := userId.(string)
+	if !ok {
+		fmt.Println("error", ok)
+	}
+	return reqID
+}
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		//log.Println("CORS", ORIGIN_URL)
@@ -564,9 +676,42 @@ func CheckPasswordHash(password, passwordHashed string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(passwordHashed), []byte(password))
 	return err == nil
 }
+
+func insertFavoriteManga(db *sql.DB, favManga FavoriteManga) (int64, error) {
+	slqStatementUpdt := `INSERT INTO favorites_mangas
+	(user_id, manga_id) VALUES (?, ?)`
+
+	fmt.Println("fav", favManga)
+	result, err := db.Exec(slqStatementUpdt, 
+		favManga.UserId,
+		favManga.MangaId,
+	)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao rodar INSERT FAVORITE MANGA: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err !=  nil {
+		erro := fmt.Sprintf("Erro ao retornar linhas afetadas INSERT FAVORITE MANGA: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+	
+	ok := fmt.Sprintf("Inserindo favorite manga: %v", favManga)
+	log.Printf("%s",ok)
+	writeToFile("logs.log", logOk(ok))
+	return rowsAffected, nil
+}
+
 func insertSession(db *sql.DB, session Session) (int64, error) {
 	slqStatementUpdt := `INSERT INTO sessions 
-	(id, user_id, created_at, expires_at, isActive) VALUES (?, ?, ?, ?, ?)`
+	(id, user_id, created_at, expires_at, isActive, tokenNotification) VALUES (?, ?, ?, ?, ?, ?)`
 
 	result, err := db.Exec(slqStatementUpdt, 
 		session.Id,
@@ -574,6 +719,7 @@ func insertSession(db *sql.DB, session Session) (int64, error) {
 		session.Created_at,
 		session.Expires_at,
 		1,
+		session.TokenNotification,
 	)
 
 	if err != nil {
@@ -642,7 +788,7 @@ func queryMangas (db *sql.DB) ([]Manga, error) {
   for rows.Next() {
     var manga Manga
 
-    if err := rows.Scan(&manga.Id, &manga.Name, &manga.ChapterNumber, &manga.Url, &manga.Image); err != nil {
+    if err := rows.Scan(&manga.Id, &manga.Name, &manga.ChapterNumber, &manga.Url, &manga.Image, &manga.LastChapterLink); err != nil {
 			erro := fmt.Sprintf("Erro ao escanear linha QUERY MANGAS: %s", err.Error())
 			log.Panic(erro)
 			writeToFile("logs.log", logError(erro))
@@ -695,10 +841,10 @@ func insertManga(db *sql.DB, manga Manga) (int64, error) {
 	return rowsAffected, nil
 }
 
-func updateManga(db *sql.DB, id int, chapterNumber int) (int64, error) {
-	slqStatementUpdt := `UPDATE mangas SET chapterNumber = ? WHERE id = ?`
+func updateManga(db *sql.DB, id int, chapterNumber int, lastChapterLink string) (int64, error) {
+	slqStatementUpdt := `UPDATE mangas SET chapterNumber = ?, lastChapterLink = ? WHERE id = ?`
 
-	result, err := db.Exec(slqStatementUpdt, chapterNumber, id)
+	result, err := db.Exec(slqStatementUpdt, chapterNumber, lastChapterLink, id)
 
 	if err != nil {
 		erro := fmt.Sprintf("Erro ao rodar UPDATE MANGA: %s", err.Error())
@@ -802,8 +948,6 @@ func findSessionById (db *sql.DB, id string, isActive int) (Session, error) {
 		panic(err)
 	}
 }
-
-
 
 func writeToFile (pathWithFileName string, text string) error {
 	file, err := os.OpenFile(pathWithFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
