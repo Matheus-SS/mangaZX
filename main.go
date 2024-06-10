@@ -53,15 +53,34 @@ type User struct {
 	Id    			int  `json:"id"`
 	Username 		string `json:"username"`
 	Password  	string `json:"password"`
-	Created_at  time.Time `json:"created_at"`
-	Updated_at  time.Time `json:"updated_at"`
+	Created_at  int64 `json:"created_at"`
+	Updated_at  *int64 `json:"updated_at"`
 }
 
 type FavoriteManga struct {
 	Id    			int  `json:"id"`
 	UserId 		  int `json:"userId"`
 	MangaId  	  int `json:"mangaId"`
-	Created_at  time.Time `json:"created_at"`
+	Created_at  int64 `json:"created_at"`
+}
+
+// type FavoriteMangaList struct {
+// 	Id    			int  `json:"id"`
+// 	UserId 		  int `json:"userId"`
+// 	MangaId  	  int `json:"mangaId"`
+// 	Created_at  time.Time `json:"created_at"`
+// 	ChapterNumber  int `json:"chapterNumber"`
+// 	Url    string `json:"url"`
+// 	Image  string `json:"image"`
+// 	LastChapterLink  string `json:"lastChapterLink"`
+// 	Username 		string `json:"username"`
+// 	UserCreated_at  time.Time `json:"user_created_at"`
+// 	UserUpdated_at  time.Time `json:"user_updated_at"`
+// }
+
+type FavoriteMangaList struct {
+	User				User		`json:"user"`
+	Manga				[]Manga		`json:"manga"`
 }
 
 type Login struct {
@@ -196,8 +215,9 @@ func main() {
 	privateRouter.Use(AuthMiddleware)
 	privateRouter.HandleFunc("/mangas", listMangas).Methods(http.MethodGet, http.MethodOptions)
 	privateRouter.HandleFunc("/mangas/me/favorite", createFavoriteManga).Methods(http.MethodPost, http.MethodOptions)
+	privateRouter.HandleFunc("/mangas/me/favorite", listFavoriteMangaByUserId).Methods(http.MethodGet, http.MethodOptions)
+	privateRouter.HandleFunc("/mangas/me/favorite/{id}", removeFavoriteMangaByUserId).Methods(http.MethodDelete, http.MethodOptions)
 	privateRouter.HandleFunc("/send-notification", sendNotification).Methods(http.MethodPost, http.MethodOptions)
-
 
 	handler := func (w http.ResponseWriter, r *http.Request) {
 		tmpl := template.Must(template.ParseFiles("views/index.html"))
@@ -430,37 +450,107 @@ func listMangas(w http.ResponseWriter, r *http.Request) {
   toJSON(w, http.StatusOK, mangas)
 }
 
+func removeFavoriteMangaByUserId(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userId := getUserId(ctx)
+	vars := mux.Vars(r)
+
+	mangaId := vars["id"];
+
+	mangaIdInt, err := strconv.Atoi(mangaId)
+
+	if err != nil {
+		fmt.Println("erro de conversao", err)
+		panic(err)
+	}
+
+	fmt.Println(mangaId)
+	_, err = deleteFavoriteMangaByUserId(database.con, userId, mangaIdInt)
+
+	if err != nil {
+		erro := fmt.Sprintf("erro ao remover favorito: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		toJSON(w, http.StatusInternalServerError, "erro ao remover favorito")
+		return 
+	}
+
+}
+
+
+func deleteFavoriteMangaByUserId(db *sql.DB, user_id, manga_id int) (int64, error) {
+	slqStatementUpdt := "DELETE FROM favorites_mangas WHERE user_id = ? AND manga_id = ?"
+
+	fmt.Println("aaaaaaa", user_id, manga_id)
+	result, err := db.Exec(slqStatementUpdt, 
+		user_id,
+		manga_id,
+	)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao rodar DELETE FAVORITE MANGA BY USER ID: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err !=  nil {
+		erro := fmt.Sprintf("Erro ao retornar linhas afetadas DELETE FAVORITE MANGA BY USER ID: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+	
+	ok := fmt.Sprintf("deletando manga favorito: %d, %d", user_id, manga_id)
+	log.Printf(ok)
+	writeToFile("logs.log", logOk(ok))
+	return rowsAffected, nil
+}
+
+func listFavoriteMangaByUserId(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userId := getUserId(ctx)
+	
+	
+	favMangas, err := queryFavMangasByUserId(database.con, userId)
+
+	if err != nil {
+		erro := fmt.Sprintf("erro ao listar mangas favoritos de usuarios por id: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		toJSON(w, http.StatusInternalServerError, "Erro ao listar mangas favoritos")
+	}
+
+	if favMangas[0].Manga == nil {
+		toJSON(w, http.StatusOK, []string{})
+		return
+	}
+
+	toJSON(w, http.StatusOK, favMangas[0].Manga)
+}
+
+
 func createFavoriteManga(w http.ResponseWriter, r *http.Request) {
 	var fav FavoriteManga 
 	json.NewDecoder(r.Body).Decode(&fav)
 
 	ctx := r.Context()
-
 	userId := getUserId(ctx)
 	
-	userIdInt, err := strconv.Atoi(userId)
-
-	if err != nil {
-		fmt.Println("erro de conversao", err)
-	}
-	 _, errr := insertFavoriteManga(database.con, FavoriteManga{
-		UserId: userIdInt,
+	 _, err := insertFavoriteManga(database.con, FavoriteManga{
+		UserId: userId,
 		MangaId: fav.MangaId,
 	})
 
-	if errr != nil {
+	if err != nil {
 		writeToFile("logs.log", logError(err.Error()))
 		toJSON(w, http.StatusInternalServerError, "erro ao inserir manga favorito")
 		return
 	}
 
-	d := struct {
-		Message 					string 	`json:"message"`
-	} {
-		Message: "ok",
-	}
-
-	toJSON(w, http.StatusOK, d)
+	toJSON(w, http.StatusOK, "ok")
 }
 func createUser(w http.ResponseWriter, r *http.Request) {
 	var user User 
@@ -637,14 +727,23 @@ func AuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func getUserId(ctx context.Context) string {
+func getUserId(ctx context.Context) int {
 	userId := ctx.Value(CTX_KEY)
 
 	reqID, ok := userId.(string)
 	if !ok {
 		fmt.Println("error", ok)
+		panic(ok)
 	}
-	return reqID
+
+	userIdInt, err := strconv.Atoi(reqID)
+
+	if err != nil {
+		fmt.Println("erro de conversao", err)
+		panic(err)
+	}
+
+	return userIdInt
 }
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -707,6 +806,65 @@ func insertFavoriteManga(db *sql.DB, favManga FavoriteManga) (int64, error) {
 	log.Printf("%s",ok)
 	writeToFile("logs.log", logOk(ok))
 	return rowsAffected, nil
+}
+
+func queryFavMangasByUserId (db *sql.DB, user_id int) ([]FavoriteMangaList, error) {
+	sqlStatement:= `
+		SELECT
+			A.user_id AS user_id,
+			A.manga_id AS manga_id,
+			B.name AS name,
+			B.chapterNumber AS chapterNumber,
+			B.url AS url,
+			B.image AS image,
+			B.lastChapterLink AS lastChapterLink,
+			C.username AS username,
+			C.created_at AS user_created_at,
+			C.updated_at AS user_updated_at
+		FROM
+			favorites_mangas A
+			JOIN mangas B ON A.manga_id = B.id
+			JOIN users C ON A.user_id = C.id
+		WHERE A.user_id = ?;`
+
+	rows, err := db.Query(sqlStatement, user_id)
+  if err != nil {
+		erro := fmt.Sprintf("Erro ao executar query QUERY FAVMANGAS: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+    os.Exit(1)
+  }
+  defer rows.Close()
+
+	var favMangaList FavoriteMangaList
+	var mangas []Manga
+	var user 		User
+  for rows.Next() {
+		var manga 	Manga
+		
+    if err := rows.Scan(&user.Id, &manga.Id, &manga.Name, &manga.ChapterNumber, &manga.Url, &manga.Image, &manga.LastChapterLink, &user.Username, &user.Created_at, &user.Updated_at); err != nil {
+			erro := fmt.Sprintf("Erro ao escanear linha QUERY FAV MANGA BY USER ID: %s", err.Error())
+			log.Panic(erro)
+			writeToFile("logs.log", logError(erro))
+      return nil, err
+    }
+		
+		mangas = append(mangas, manga)
+	}
+
+  if err := rows.Err(); err != nil {
+		erro := fmt.Sprintf("Erro ao iterar pelas linhas QUERY FAV MANGA BY USER ID: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return nil, err
+  }
+
+	favMangaList = FavoriteMangaList{
+		User: user,
+		Manga: mangas,
+	}
+
+	return []FavoriteMangaList{favMangaList}, nil
 }
 
 func insertSession(db *sql.DB, session Session) (int64, error) {
