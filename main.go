@@ -28,6 +28,7 @@ import (
 
 var errUsuarioNaoEncontrado error = errors.New("usuario nao encontrado")
 var errSessaoNaoEncontrada error = errors.New("sessao nao encontrada")
+var errMangaFavoritoNaoEncontrado error = errors.New("manga favorito nao encontrado")
 var errTokenInvalido error = errors.New("token invalido")
 var errTokenExpirado error = errors.New("token expirado")
 type resposta struct {
@@ -538,7 +539,14 @@ func createFavoriteManga(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	userId := getUserId(ctx)
-	
+
+	favManga, _ := findFavMangasByUserIdAndMangaId(database.con, userId, fav.MangaId)
+
+	if favManga[0].User.Id != 0 {
+		toJSON(w, http.StatusUnprocessableEntity, "manga ja adicionado aos favoritos")
+		return
+	}
+
 	 _, err := insertFavoriteManga(database.con, FavoriteManga{
 		UserId: userId,
 		MangaId: fav.MangaId,
@@ -806,6 +814,55 @@ func insertFavoriteManga(db *sql.DB, favManga FavoriteManga) (int64, error) {
 	log.Printf("%s",ok)
 	writeToFile("logs.log", logOk(ok))
 	return rowsAffected, nil
+}
+
+func findFavMangasByUserIdAndMangaId (db *sql.DB, user_id, manga_id int) ([]FavoriteMangaList, error) {
+	sqlStatement:= `
+		SELECT
+			A.user_id AS user_id,
+			A.manga_id AS manga_id,
+			B.name AS name,
+			B.chapterNumber AS chapterNumber,
+			B.url AS url,
+			B.image AS image,
+			B.lastChapterLink AS lastChapterLink,
+			C.username AS username,
+			C.created_at AS user_created_at,
+			C.updated_at AS user_updated_at
+		FROM
+			favorites_mangas A
+			JOIN mangas B ON A.manga_id = B.id
+			JOIN users C ON A.user_id = C.id
+		WHERE A.user_id = ? AND A.manga_id = ?;`
+
+	var user 		User
+	var manga 	Manga
+
+	var favMangaList FavoriteMangaList
+	var mangas []Manga
+
+	rows := db.QueryRow(sqlStatement, user_id, manga_id)
+	err := rows.Scan(&user.Id, &manga.Id, &manga.Name, &manga.ChapterNumber, &manga.Url, &manga.Image, &manga.LastChapterLink, &user.Username, &user.Created_at, &user.Updated_at);
+
+	mangas = append(mangas, manga)
+
+  favMangaList = FavoriteMangaList{
+		User: user,
+		Manga: mangas,
+	}
+  switch err {
+		case sql.ErrNoRows: 
+		return []FavoriteMangaList{favMangaList}, errMangaFavoritoNaoEncontrado
+		case nil:
+			return []FavoriteMangaList{favMangaList}, nil
+		default:
+			erro := fmt.Sprintf("Erro ao encontrar usuario por nome: %s", err.Error())
+			log.Panic(erro)
+			writeToFile("logs.log", logError(erro))
+			panic(err)
+		}
+
+	
 }
 
 func queryFavMangasByUserId (db *sql.DB, user_id int) ([]FavoriteMangaList, error) {
