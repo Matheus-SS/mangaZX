@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -41,6 +42,20 @@ type Log struct {
 	Timestamp  string  `json:"timestamp"`
 }
 
+// type PushNotification struct {
+// 	UserId	int
+// 	Token 	string 
+// 	MangaId	int
+// 	MangaName	string
+// 	MangaLastChapterLink string 
+// 	MangaImage	string
+// }
+
+type PushNotification struct {
+	UserId	int
+	Token 	string
+	Manga 	[]Manga
+}
 type Manga struct {
 	Id    int  `json:"id"`
 	Name 	string `json:"name"`
@@ -48,6 +63,12 @@ type Manga struct {
 	Url    string `json:"url"`
 	Image  string `json:"image"`
 	LastChapterLink  string `json:"lastChapterLink"`
+}
+
+type Notification struct {
+	UserId 			int `json:"userId"`
+	Manga				Manga `json:"manga"`
+	CreatedAt   int64  `json:"createdAt"`
 }
 
 type User struct {
@@ -64,20 +85,6 @@ type FavoriteManga struct {
 	MangaId  	  int `json:"mangaId"`
 	Created_at  int64 `json:"created_at"`
 }
-
-// type FavoriteMangaList struct {
-// 	Id    			int  `json:"id"`
-// 	UserId 		  int `json:"userId"`
-// 	MangaId  	  int `json:"mangaId"`
-// 	Created_at  time.Time `json:"created_at"`
-// 	ChapterNumber  int `json:"chapterNumber"`
-// 	Url    string `json:"url"`
-// 	Image  string `json:"image"`
-// 	LastChapterLink  string `json:"lastChapterLink"`
-// 	Username 		string `json:"username"`
-// 	UserCreated_at  time.Time `json:"user_created_at"`
-// 	UserUpdated_at  time.Time `json:"user_updated_at"`
-// }
 
 type FavoriteMangaList struct {
 	User				User		`json:"user"`
@@ -218,6 +225,8 @@ func main() {
 	privateRouter.HandleFunc("/mangas/me/favorite", createFavoriteManga).Methods(http.MethodPost, http.MethodOptions)
 	privateRouter.HandleFunc("/mangas/me/favorite", listFavoriteMangaByUserId).Methods(http.MethodGet, http.MethodOptions)
 	privateRouter.HandleFunc("/mangas/me/favorite/{id}", removeFavoriteMangaByUserId).Methods(http.MethodDelete, http.MethodOptions)
+	privateRouter.HandleFunc("/mangas/me/notification", createNotificationManga).Methods(http.MethodPost, http.MethodOptions)
+	privateRouter.HandleFunc("/mangas/me/notification", listNotificationMangaByUserId).Methods(http.MethodGet, http.MethodOptions)
 	privateRouter.HandleFunc("/send-notification", sendNotification).Methods(http.MethodPost, http.MethodOptions)
 
 	handler := func (w http.ResponseWriter, r *http.Request) {
@@ -284,6 +293,7 @@ func main() {
 func start() {
 	simple(database.con)
 	//dispatchWebhook()
+	//dispatchPushNotification()
 }
 
 func simple(db *sql.DB) {
@@ -400,43 +410,143 @@ func dispatchWebhook() {
 	defer res.Body.Close()
 }
 
-func sendNotificationToDevices() {
+func dispatchPushNotification() {
+	if (len(mangasToSend) == 0) {
+		ok := fmt.Sprintln("nenhum manga para ser enviado")
+		log.Println(ok)
+		writeToFile("logs.log", logOk(ok))
+		return
+	}
+	var mangasId = []int{}
 
+	for _, ch := range mangasToSend {
+		mangasId = append(mangasId, ch.Id)
+	}
+
+	tokens, err := queryTokenNotification(database.con, mangasId);
+
+	if err != nil {
+		erro := fmt.Sprintln("erro ao buscar token de notificacao")
+		log.Println(erro)
+		writeToFile("logs.log", logError(erro))
+		return
+	}
+
+	if len(tokens) == 0 {
+		ok := fmt.Sprintln("nenhum usuariario encontrado para enviar notificacao")
+		log.Println(ok)
+		writeToFile("logs.log", logOk(ok))
+		return
+	}
+	fmt.Println("tokens", tokens)
+	//To check the token is valid
+	// pushToken, err := expo.NewExponentPushToken("")
+	// if err != nil {
+	// 		panic(err)
+	// }
+
+	// // Create a new Expo SDK client
+	// client := expo.NewPushClient(nil)
+
+	// // Publish message
+	// response, err := client.Publish(
+	// 		&expo.PushMessage{
+	// 				To: []expo.ExponentPushToken{pushToken},
+	// 				Body: "This is a test notification",
+	// 				Data: map[string]string{"withSome": "data"},
+	// 				Sound: "default",
+	// 				Title: "Notification Title",
+	// 				Priority: expo.DefaultPriority,
+	// 		},
+	// )
+	
+	// // Check errors
+	// if err != nil {
+	// 		panic(err)
+	// }
+	
+	// // Validate responses
+	// if response.ValidateResponse() != nil {
+	// 		fmt.Println(response.PushMessage.To, "failed")
+	// }
 }
 
 func sendNotification(w http.ResponseWriter, r *http.Request) {
-	// To check the token is valid
-	pushToken, err := expo.NewExponentPushToken("")
+	// if (len(mangasToSend) == 0) {
+	// 	ok := fmt.Sprintln("Nada enviado")
+	// 	log.Println(ok)
+	// 	writeToFile("logs.log", logOk(ok))
+	// 	toJSON(w, http.StatusOK, "nenhum manga para ser enviado")
+	// 	return
+	// }
+	// var mangasId = []int{}
+
+	// for _, ch := range mangasToSend {
+	// 	mangasId = append(mangasId, ch.Id)
+	// }
+	n := []int{1,2}
+	tokens, err := queryTokenNotification(database.con, n);
+
 	if err != nil {
-			panic(err)
+		toJSON(w, http.StatusInternalServerError, "erro ao buscar token de notificacao")
+		return
 	}
 
-	// Create a new Expo SDK client
-	client := expo.NewPushClient(nil)
-
-	// Publish message
-	response, err := client.Publish(
-			&expo.PushMessage{
-					To: []expo.ExponentPushToken{pushToken},
-					Body: "This is a test notification",
-					Data: map[string]string{"withSome": "data"},
-					Sound: "default",
-					Title: "Notification Title",
-					Priority: expo.DefaultPriority,
-			},
-	)
+	if len(tokens) == 0 {
+		toJSON(w, http.StatusOK, "nenhum usuario encontrado para enviar notificacao")
+		return
+	}
+	fmt.Println("tokens", tokens)
+	//To check the token is valid
 	
-	// Check errors
-	if err != nil {
+	for _, token := range tokens {
+		pushToken, err := expo.NewExponentPushToken(token.Token)
+		if err != nil {
+			erro := fmt.Sprintln("erro NewExponentPushToken", err.Error())
+			log.Println(erro)
+			writeToFile("logs.log", logError(erro))
 			panic(err)
-	}
+		}
 	
-	// Validate responses
-	if response.ValidateResponse() != nil {
-			fmt.Println(response.PushMessage.To, "failed")
+		// Create a new Expo SDK client
+		client := expo.NewPushClient(nil)
+	
+		// Publish message
+		response, err := client.Publish(
+				&expo.PushMessage{
+						To: []expo.ExponentPushToken{pushToken},
+						Body: "Algum de seus mangas em favoritos recebeu um atualização",
+						Sound: "default",
+						Title: "MangaZX",
+						Priority: expo.DefaultPriority,
+				},
+		)
+		
+		// Check errors
+		if err != nil {
+				erro := fmt.Sprintf("erro publish UserId: %d - token: %s", token.UserId, err.Error())
+				log.Println(erro)
+				writeToFile("logs.log", logError(erro))
+				panic(err)
+		}
+		
+		// Validate responses
+		if response.ValidateResponse() != nil {
+				erro := fmt.Sprintf("failed UserId: %d - token: %s", token.UserId, response.PushMessage.To)
+				log.Println(erro)
+				writeToFile("logs.log", logError(erro))
+				return
+		}
+		ok := fmt.Sprintf("enviado push notification - UserId: %d - token: %s", token.UserId, response.PushMessage.To)
+		
+		log.Println(ok)
+		writeToFile("logs.log", logOk(ok))
 	}
-	toJSON(w, 200, "ok")
+
+	toJSON(w, http.StatusOK, tokens)
 }
+
+
 
 func listMangas(w http.ResponseWriter, r *http.Request) {
 	mangas, err := queryMangas(database.con)
@@ -532,6 +642,56 @@ func listFavoriteMangaByUserId(w http.ResponseWriter, r *http.Request) {
 	toJSON(w, http.StatusOK, favMangas[0].Manga)
 }
 
+func listNotificationMangaByUserId(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userId := getUserId(ctx)
+	
+	
+	notificationMangas, err := queryNotificationByUserId(database.con, userId)
+
+	if err != nil {
+		erro := fmt.Sprintf("erro ao listar notificacao de mangas de usuarios por id: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		toJSON(w, http.StatusInternalServerError, "Erro ao listar notificao de mangas")
+	}
+
+	toJSON(w, http.StatusOK, notificationMangas)
+}
+
+func createNotificationManga(w http.ResponseWriter, r *http.Request) {
+	var notification Notification 
+	json.NewDecoder(r.Body).Decode(&notification)
+
+	ctx := r.Context()
+	userId := getUserId(ctx)
+
+	//favManga, _ := findFavMangasByUserIdAndMangaId(database.con, userId, fav.MangaId)
+
+	// if favManga[0].User.Id != 0 {
+	// 	toJSON(w, http.StatusUnprocessableEntity, "manga ja adicionado aos favoritos")
+	// 	return
+	// }
+	fmt.Println("noti",notification)
+	 _, err := insertNotification(database.con, Notification{
+		UserId: userId,
+		Manga: Manga{
+			Id: notification.Manga.Id,
+			Name: notification.Manga.Name,
+			ChapterNumber: notification.Manga.ChapterNumber,
+			Image: notification.Manga.Image,
+			LastChapterLink: notification.Manga.LastChapterLink,
+		},
+	})
+
+	if err != nil {
+		writeToFile("logs.log", logError(err.Error()))
+		toJSON(w, http.StatusInternalServerError, "erro ao inserir notificacao de manga")
+		return
+	}
+
+	toJSON(w, http.StatusOK, "ok")
+}
 
 func createFavoriteManga(w http.ResponseWriter, r *http.Request) {
 	var fav FavoriteManga 
@@ -816,7 +976,7 @@ func insertFavoriteManga(db *sql.DB, favManga FavoriteManga) (int64, error) {
 	return rowsAffected, nil
 }
 
-func findFavMangasByUserIdAndMangaId (db *sql.DB, user_id, manga_id int) ([]FavoriteMangaList, error) {
+func findFavMangasByUserIdAndMangaId(db *sql.DB, user_id, manga_id int) ([]FavoriteMangaList, error) {
 	sqlStatement:= `
 		SELECT
 			A.user_id AS user_id,
@@ -861,11 +1021,59 @@ func findFavMangasByUserIdAndMangaId (db *sql.DB, user_id, manga_id int) ([]Favo
 			writeToFile("logs.log", logError(erro))
 			panic(err)
 		}
-
-	
 }
 
-func queryFavMangasByUserId (db *sql.DB, user_id int) ([]FavoriteMangaList, error) {
+func queryNotificationByUserId(db *sql.DB, user_id int) ([]Notification, error) {
+	sqlStatement:= `
+		SELECT
+			A.id AS id,
+			A.user_id AS userId,
+			A.manga_id AS mangaId,
+			A.manga_name AS mangaName,
+			A.manga_chapter_number AS mangaChapterNumber,
+			A.manga_image AS mangaImage,
+			A.manga_last_chapter_link AS mangaLastChapterLink,
+			A.created_at AS createdAt
+		FROM
+			notifications A
+		WHERE
+			A.user_id = ?
+		ORDER BY 1 DESC;`
+
+	rows, err := db.Query(sqlStatement, user_id)
+  if err != nil {
+		erro := fmt.Sprintf("Erro ao executar query QUERY NOTIFICATION BY USER ID: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+    os.Exit(1)
+  }
+  defer rows.Close()
+
+	var notificationList []Notification
+  for rows.Next() {
+		var notification 	Notification
+		
+    if err := rows.Scan(&notification.Manga.Id, &notification.UserId, &notification.Manga.Id, &notification.Manga.Name, &notification.Manga.ChapterNumber, &notification.Manga.Image, &notification.Manga.LastChapterLink, &notification.CreatedAt); err != nil {
+			erro := fmt.Sprintf("Erro ao escanear linha QUERY NOTIFICATION BY USER ID: %s", err.Error())
+			log.Panic(erro)
+			writeToFile("logs.log", logError(erro))
+      return nil, err
+    }
+		
+		notificationList = append(notificationList, notification)
+	}
+
+  if err := rows.Err(); err != nil {
+		erro := fmt.Sprintf("Erro ao iterar pelas linhas QUERY FAV MANGA BY USER ID: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return nil, err
+  }
+
+	return notificationList, nil
+}
+
+func queryFavMangasByUserId(db *sql.DB, user_id int) ([]FavoriteMangaList, error) {
 	sqlStatement:= `
 		SELECT
 			A.user_id AS user_id,
@@ -988,6 +1196,114 @@ func deleteSession(db *sql.DB, id string) (int64, error) {
 	return rowsAffected, nil
 }
 
+func queryTokenNotification(db *sql.DB, mangas_id []int) ([]PushNotification, error) {
+	placeholders := strings.Repeat("?,", len(mangas_id))
+	placeholders = placeholders[:len(placeholders)-1]; // remover a virgula do final
+	sqlStatement := fmt.Sprintf(`
+		SELECT
+			A.user_id,
+			B.tokenNotification,
+			C.name,
+			C.lastChapterLink,
+			C.image,
+			A.manga_id
+		FROM
+			favorites_mangas A
+			JOIN sessions B ON A.user_id = B.user_id
+			JOIN mangas C ON A.manga_id = C.id
+		WHERE
+			A.manga_id IN (%s)
+			AND B.isActive = 1
+		GROUP BY
+			A.user_id,
+			A.manga_id,
+			B.tokenNotification;`, placeholders)
+
+	args := make([]interface{}, len(mangas_id))
+
+	for i, id := range mangas_id {
+		args[i] = id
+	}
+	fmt.Println("mangasie", mangas_id)
+		fmt.Println("args", args)
+	rows, err := db.Query(sqlStatement, args...)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao executar query QUERY TOKEN NOTIFICATION: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+    os.Exit(1)
+  }
+
+	defer rows.Close();
+
+	var tokens []PushNotification
+	for rows.Next() {
+		var token PushNotification
+		var manga Manga
+		if err := rows.Scan(&token.UserId, &token.Token, &manga.Name, &manga.LastChapterLink, &manga.Image, &manga.Id); err != nil {
+			erro := fmt.Sprintf("Erro ao escanear linha QUERY TOKEN NOTIFICATION: %s", err.Error())
+			log.Panic(erro)
+			writeToFile("logs.log", logError(erro))
+      return nil, err
+			}
+			
+			index := findIndexNotification(tokens, token.UserId);
+			fmt.Println("index", index)
+			fmt.Println("userid", token.UserId)
+			fmt.Println("token", token)
+			fmt.Println("manga", manga)
+			if index == -1 {
+				var mangas []Manga
+				mangas = append(mangas, manga)
+				tokens = append(tokens, PushNotification{
+					UserId: token.UserId,
+					Token: token.Token,
+					Manga: mangas,
+				})
+			} else {
+				tokens[index].Manga = append(tokens[index].Manga, manga)
+			}
+	}
+
+	if err := rows.Err(); err != nil {
+		erro := fmt.Sprintf("Erro ao iterar pelas linhas QUERY TOKEN NOTIFICATION: %s", err.Error())
+		log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return nil, err
+	}
+
+	return tokens, nil
+}
+
+// func findIndexLinear(token []PushNotification, userId int) int {
+// 	for key := range token {
+// 		if token[key].UserId == userId {
+// 			return key
+// 		}
+// 	}
+// 	return -1
+// }
+
+// binary tree
+func findIndexNotification(token []PushNotification, userId int) int {
+	lowIndex := 0
+	highIndex := len(token) - 1
+
+	for lowIndex <= highIndex {
+		middleIndex := lowIndex + int(math.Floor(float64(highIndex - lowIndex) / 2.0))
+		if token[middleIndex].UserId == userId {
+			return middleIndex
+		} else if token[middleIndex].UserId < userId {
+			lowIndex = middleIndex + 1
+		} else {
+			highIndex = middleIndex - 1;
+		}
+	}
+
+	return -1
+}
+
 func queryMangas (db *sql.DB) ([]Manga, error) {
 	rows, err := db.Query("SELECT * FROM mangas")
   if err != nil {
@@ -1021,6 +1337,41 @@ func queryMangas (db *sql.DB) ([]Manga, error) {
   }
 
 	return mangas, nil
+}
+
+func insertNotification(db *sql.DB, notification Notification) (int64, error) {
+	slqStatementUpdt := `INSERT INTO notifications 
+	(user_id, manga_id, manga_name, manga_chapter_number, manga_image, manga_last_chapter_link) VALUES (?, ?, ?, ?, ?, ?)`
+
+	result, err := db.Exec(slqStatementUpdt,
+		notification.UserId,
+		notification.Manga.Id, 
+		notification.Manga.Name,
+		notification.Manga.ChapterNumber,
+		notification.Manga.Image,
+		notification.Manga.LastChapterLink,
+	)
+
+	if err != nil {
+		erro := fmt.Sprintf("Erro ao rodar INSERT NOTIFICATION: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err !=  nil {
+		erro := fmt.Sprintf("Erro ao retornar linhas afetadas INSERT NOTIFICATION: %s", err.Error())
+    log.Panic(erro)
+		writeToFile("logs.log", logError(erro))
+		return 0, err
+	}
+	
+	ok := fmt.Sprintf("Inserindo NOTIFICATION: %v", notification)
+	log.Printf(ok)
+	writeToFile("logs.log", logOk(ok))
+	return rowsAffected, nil
 }
 
 func insertManga(db *sql.DB, manga Manga) (int64, error) {
