@@ -292,8 +292,8 @@ func main() {
 
 func start() {
 	simple(database.con)
-	//dispatchWebhook()
-	//dispatchPushNotification()
+	dispatchWebhook()
+	dispatchPushNotification()
 }
 
 func simple(db *sql.DB) {
@@ -412,7 +412,7 @@ func dispatchWebhook() {
 
 func dispatchPushNotification() {
 	if (len(mangasToSend) == 0) {
-		ok := fmt.Sprintln("nenhum manga para ser enviado")
+		ok := fmt.Sprintln("Nada enviado")
 		log.Println(ok)
 		writeToFile("logs.log", logOk(ok))
 		return
@@ -433,59 +433,80 @@ func dispatchPushNotification() {
 	}
 
 	if len(tokens) == 0 {
-		ok := fmt.Sprintln("nenhum usuariario encontrado para enviar notificacao")
+		ok := fmt.Sprintln("nenhum usuario encontrado para enviar notificacao")
 		log.Println(ok)
 		writeToFile("logs.log", logOk(ok))
 		return
 	}
 	fmt.Println("tokens", tokens)
 	//To check the token is valid
-	// pushToken, err := expo.NewExponentPushToken("")
-	// if err != nil {
-	// 		panic(err)
-	// }
-
-	// // Create a new Expo SDK client
-	// client := expo.NewPushClient(nil)
-
-	// // Publish message
-	// response, err := client.Publish(
-	// 		&expo.PushMessage{
-	// 				To: []expo.ExponentPushToken{pushToken},
-	// 				Body: "This is a test notification",
-	// 				Data: map[string]string{"withSome": "data"},
-	// 				Sound: "default",
-	// 				Title: "Notification Title",
-	// 				Priority: expo.DefaultPriority,
-	// 		},
-	// )
 	
-	// // Check errors
-	// if err != nil {
-	// 		panic(err)
-	// }
+	for _, token := range tokens {
+		pushToken, err := expo.NewExponentPushToken(token.Token)
+		if err != nil {
+			erro := fmt.Sprintln("erro NewExponentPushToken", err.Error())
+			log.Println(erro)
+			writeToFile("logs.log", logError(erro))
+			panic(err)
+		}
 	
-	// // Validate responses
-	// if response.ValidateResponse() != nil {
-	// 		fmt.Println(response.PushMessage.To, "failed")
-	// }
+		// Create a new Expo SDK client
+		client := expo.NewPushClient(nil)
+	
+		// Publish message
+		response, err := client.Publish(
+				&expo.PushMessage{
+						To: []expo.ExponentPushToken{pushToken},
+						Body: "Look!!! New chapter arrived",
+						Sound: "default",
+						Title: "MangaZX",
+						Priority: expo.DefaultPriority,
+				},
+		)
+		
+		// Check errors
+		if err != nil {
+				erro := fmt.Sprintf("erro publish UserId: %d - token: %s", token.UserId, err.Error())
+				log.Println(erro)
+				writeToFile("logs.log", logError(erro))
+				panic(err)
+		}
+		
+		// Validate responses
+		if response.ValidateResponse() != nil {
+				erro := fmt.Sprintf("failed UserId: %d - token: %s", token.UserId, response.PushMessage.To)
+				log.Println(erro)
+				writeToFile("logs.log", logError(erro))
+				return
+		}
+		ok := fmt.Sprintf("enviado push notification - UserId: %d - token: %s", token.UserId, response.PushMessage.To)
+		for _, v := range token.Manga {
+			insertNotification(database.con, Notification{
+				UserId: token.UserId,
+				Manga: v,
+			})
+		}
+		
+		log.Println(ok)
+		writeToFile("logs.log", logOk(ok))
+	}
 }
 
 func sendNotification(w http.ResponseWriter, r *http.Request) {
-	// if (len(mangasToSend) == 0) {
-	// 	ok := fmt.Sprintln("Nada enviado")
-	// 	log.Println(ok)
-	// 	writeToFile("logs.log", logOk(ok))
-	// 	toJSON(w, http.StatusOK, "nenhum manga para ser enviado")
-	// 	return
-	// }
-	// var mangasId = []int{}
+	if (len(mangasToSend) == 0) {
+		ok := fmt.Sprintln("Nada enviado")
+		log.Println(ok)
+		writeToFile("logs.log", logOk(ok))
+		toJSON(w, http.StatusOK, "nenhum manga para ser enviado")
+		return
+	}
+	var mangasId = []int{}
 
-	// for _, ch := range mangasToSend {
-	// 	mangasId = append(mangasId, ch.Id)
-	// }
-	n := []int{1,2}
-	tokens, err := queryTokenNotification(database.con, n);
+	for _, ch := range mangasToSend {
+		mangasId = append(mangasId, ch.Id)
+	}
+
+	tokens, err := queryTokenNotification(database.con, mangasId);
 
 	if err != nil {
 		toJSON(w, http.StatusInternalServerError, "erro ao buscar token de notificacao")
@@ -538,6 +559,12 @@ func sendNotification(w http.ResponseWriter, r *http.Request) {
 				return
 		}
 		ok := fmt.Sprintf("enviado push notification - UserId: %d - token: %s", token.UserId, response.PushMessage.To)
+		for _, v := range token.Manga {
+			insertNotification(database.con, Notification{
+				UserId: token.UserId,
+				Manga: v,
+			})
+		}
 		
 		log.Println(ok)
 		writeToFile("logs.log", logOk(ok))
@@ -1048,7 +1075,7 @@ func queryNotificationByUserId(db *sql.DB, user_id int) ([]Notification, error) 
     os.Exit(1)
   }
   defer rows.Close()
-
+	fmt.Println(sqlStatement)
 	var notificationList []Notification
   for rows.Next() {
 		var notification 	Notification
@@ -1205,6 +1232,7 @@ func queryTokenNotification(db *sql.DB, mangas_id []int) ([]PushNotification, er
 			B.tokenNotification,
 			C.name,
 			C.lastChapterLink,
+			C.chapterNumber,
 			C.image,
 			A.manga_id
 		FROM
@@ -1241,7 +1269,7 @@ func queryTokenNotification(db *sql.DB, mangas_id []int) ([]PushNotification, er
 	for rows.Next() {
 		var token PushNotification
 		var manga Manga
-		if err := rows.Scan(&token.UserId, &token.Token, &manga.Name, &manga.LastChapterLink, &manga.Image, &manga.Id); err != nil {
+		if err := rows.Scan(&token.UserId, &token.Token, &manga.Name, &manga.LastChapterLink, &manga.ChapterNumber, &manga.Image, &manga.Id); err != nil {
 			erro := fmt.Sprintf("Erro ao escanear linha QUERY TOKEN NOTIFICATION: %s", err.Error())
 			log.Panic(erro)
 			writeToFile("logs.log", logError(erro))
