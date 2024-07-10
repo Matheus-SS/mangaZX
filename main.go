@@ -322,11 +322,15 @@ func simple(db *sql.DB) {
 			lastChapter := e.ChildText("div.inepcx span.epcurlast")
 
 			lastChapterLink := e.ChildAttr(".inepcx:nth-of-type(2) a", "href")
-
-			lastChapterNumber := strings.Split(lastChapter, " ")[1]
+			
+			// CASO QUE O TITULO TENHA TRACO
+			newLastChapter := strings.ReplaceAll(lastChapter, "-", "")
+		
+			lastChapterNumber := strings.Split(newLastChapter, " ")[1]
 			n, err := strconv.Atoi(lastChapterNumber)
 
 			if err != nil {
+				log.Fatal(err.Error())
 				erro := fmt.Sprintln("Erro ao converter numero do capitulo para tipo number")
 				log.Fatal(erro)
 				writeToFile("logs.log", logError(erro))
