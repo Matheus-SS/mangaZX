@@ -214,9 +214,8 @@ func main() {
 	cron.Start()
 	
 	router := mux.NewRouter()
-
+	router.Use(enableCORS)
 	api := router.PathPrefix("/api/").Subrouter()
-	api.Use(enableCORS)
 	api.HandleFunc("/user", createUser).Methods(http.MethodPost, http.MethodOptions)
 	api.HandleFunc("/login", login).Methods(http.MethodPost, http.MethodOptions)
 	api.HandleFunc("/health", health).Methods(http.MethodGet, http.MethodOptions)
@@ -951,9 +950,8 @@ func getUserId(ctx context.Context) int {
 }
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		//log.Println("CORS", ORIGIN_URL)
-		if (ENVIRONMENT == "production") {
-			w.Header().Set("Access-Control-Allow-Origin", ORIGIN_URL)
+		if (os.Getenv("ENVIRONMENT") == "production") {
+			w.Header().Set("Access-Control-Allow-Origin", os.Getenv("ORIGIN_URL"))
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", "http://localhost:8081")
 		}
