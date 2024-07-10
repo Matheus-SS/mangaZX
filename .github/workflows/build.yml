@@ -1,4 +1,4 @@
-name: Build Docker Container
+name: Continuous Integration - Continuos Deployment
 
 on:
   push:
@@ -28,3 +28,20 @@ jobs:
         with:
           push: true
           tags: froste433/web-scrapping:latest
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deployment
+    needs: [docker]
+    steps:
+      - name: Deploy using ssh
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: 22
+          script: |
+            docker stop web-scrapping-go
+            docker rm web-scrapping-go
+            docker rmi froste433/web-scrapping
+            docker run -d -p 81:8080 --restart=always -v $(pwd)/.env:/app/.env --name web-scrapping-go froste433/web-scrapping

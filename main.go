@@ -219,6 +219,7 @@ func main() {
 	api.Use(enableCORS)
 	api.HandleFunc("/user", createUser).Methods(http.MethodPost, http.MethodOptions)
 	api.HandleFunc("/login", login).Methods(http.MethodPost, http.MethodOptions)
+	api.HandleFunc("/health", health).Methods(http.MethodGet, http.MethodOptions)
 	privateRouter := api.PathPrefix("/").Subrouter()
 	privateRouter.Use(AuthMiddleware)
 	privateRouter.HandleFunc("/mangas", listMangas).Methods(http.MethodGet, http.MethodOptions)
@@ -494,6 +495,10 @@ func dispatchPushNotification() {
 		log.Println(ok)
 		writeToFile("logs.log", logOk(ok))
 	}
+}
+
+func health(w http.ResponseWriter, r *http.Request) {
+	toJSON(w, http.StatusOK, "API WEBSCRAPPING GO")
 }
 
 func sendNotification(w http.ResponseWriter, r *http.Request) {
