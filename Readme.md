@@ -17,7 +17,3 @@ usando um cronjob que roda de hora em hora para verificar se algum capítulo nov
 - Nginx
 - HTMX
 - Sqlite (https://turso.tech/)
-
-## Próximos passos
-
-Construir um app mobile onde o usuario consiga selecionar o mangá que ele queira ser notificado e possa ler através do aplicativo usando uma view mesmo do próprio site de onde eu veriquei sobre o mangá.
